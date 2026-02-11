@@ -1,10 +1,6 @@
 import numpy as np
 
 def get_user_input():
-    """
-    Asks user for data ONCE at the start.
-    Returns: list of buses, list of lines
-    """
     print("--- STEP 1: System Data Entry ---")
     try:
         num_buses = int(input("Enter the total number of buses: "))
@@ -24,6 +20,11 @@ def get_user_input():
                 if type_code in [1, 2, 3]: break
             except ValueError: pass
         
+        # --- NEW: Ask for Limits for Generators ---
+        p_max_limit = 999.99 # Default high value for PQ
+        if type_code == 1 or type_code == 2:
+            p_max_limit = float(input(f"  GENERATOR LIMIT: Max Power P_max (pu): "))
+
         V = float(input(f"  Voltage V (pu): "))
         theta = float(input(f"  Angle theta (deg): "))
         Pg = float(input(f"  Gen Pg (pu): "))
@@ -38,7 +39,8 @@ def get_user_input():
             'theta': np.radians(theta),
             'Pg': Pg, 'Pl': Pl, 'Qg': Qg, 'Ql': Ql,
             'P_spec': Pg - Pl,
-            'Q_spec': Qg - Ql
+            'Q_spec': Qg - Ql,
+            'P_max': p_max_limit  # Store the limit
         })
 
     line_data = []
@@ -61,19 +63,12 @@ def get_user_input():
     return bus_data, line_data
 
 def build_y_bus(bus_data, line_data):
-    """
-    Pure Math Function. Takes data lists and returns Y_bus matrix.
-    Can be called repeatedly when topology changes.
-    """
     num_buses = len(bus_data)
-    # Map real Bus IDs to Matrix Indices (0, 1, 2...)
-    # This is crucial if we delete Bus 2, and Bus 3 becomes index 1.
     id_map = {b['id']: i for i, b in enumerate(bus_data)}
     
     Y = np.zeros((num_buses, num_buses), dtype=complex)
     
     for line in line_data:
-        # Check if both ends of the line still exist in the bus list
         if line['from'] in id_map and line['to'] in id_map:
             i = id_map[line['from']]
             j = id_map[line['to']]

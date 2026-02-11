@@ -15,11 +15,12 @@ def run_load_flow(Y_bus, bus_data, system_freq, max_iter=20, tol=1e-5, time_step
     non_slack = np.concatenate((idx_pv, idx_pq))
     non_slack.sort()
     
-    converged = False
-    
+    P_calc = np.zeros(num_buses)
+    Q_calc = np.zeros(num_buses)
+
     for it in range(max_iter):
-        P_calc = np.zeros(num_buses)
-        Q_calc = np.zeros(num_buses)
+        P_calc.fill(0.0)
+        Q_calc.fill(0.0)
         
         for i in range(num_buses):
             for k in range(num_buses):
@@ -36,10 +37,9 @@ def run_load_flow(Y_bus, bus_data, system_freq, max_iter=20, tol=1e-5, time_step
         for i in idx_pq: mismatch = max(mismatch, abs(dQa[i]))
             
         if mismatch < tol:
-            converged = True
-            break # Break silently if converged (Warm Start)
+            break 
 
-        # Jacobian Construction (Only runs if mismatch > tol)
+        # Jacobian Construction
         J1 = np.zeros((num_buses, num_buses))
         J2 = np.zeros((num_buses, num_buses))
         J3 = np.zeros((num_buses, num_buses))
@@ -71,16 +71,12 @@ def run_load_flow(Y_bus, bus_data, system_freq, max_iter=20, tol=1e-5, time_step
         bot = np.hstack((J3_red, J4_red))
         J_final = np.vstack((top, bot))
 
-        print(f"Jacobian Matrix [t={time_step}, Iter={it+1}]")
-        with np.printoptions(precision=4, suppress=True, linewidth=150):
-            print(J_final)
-
         M_final = np.concatenate((dPa[non_slack], dQa[idx_pq]))
         
         try:
             correction = np.linalg.solve(J_final, M_final)
         except np.linalg.LinAlgError:
-            return None, None 
+            return None, None, None, None
 
         n_ang = len(non_slack)
         dTheta = correction[:n_ang]
@@ -88,11 +84,4 @@ def run_load_flow(Y_bus, bus_data, system_freq, max_iter=20, tol=1e-5, time_step
         for idx, val in enumerate(non_slack): Theta[val] += dTheta[idx]
         for idx, val in enumerate(idx_pq): V[val] += dV[idx]
 
-    # --- Print Step Report ---
-    print(f"Solver Status: Converged={converged}")
-    print(f"{'ID':<4} {'V (pu)':<10} {'Ang (deg)':<10} {'P (pu)':<10} {'Q (pu)':<10}")
-    for i in range(num_buses):
-        deg = np.degrees(Theta[i])
-        print(f"{bus_data[i]['id']:<4} {V[i]:<10.4f} {deg:<10.4f} {P_calc[i]:<10.4f} {Q_calc[i]:<10.4f}")
-        
-    return V, Theta
+    return V, Theta, P_calc, Q_calc
