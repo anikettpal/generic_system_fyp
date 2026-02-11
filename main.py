@@ -17,6 +17,41 @@ def main():
     b_data, l_data = ybus_generator.get_user_input()
     if not b_data: sys.exit()
 
+    # --- NEW: PV BUS SELECTION MENU ---
+    # Filter for Type 2 (PV) buses
+    pv_buses = [b for b in b_data if b['type'] == 2]
+    
+    target_trip_id = None
+    
+    if not pv_buses:
+        print("\n[System Alert] No PV Buses found in input data. No tripping possible.")
+    else:
+        print("\n" + "="*40)
+        print("      SELECT GENERATOR TO TRIP")
+        print("="*40)
+        print(f"{'ID':<5} {'Pg (pu)':<10} {'V (pu)':<10}")
+        print("-" * 30)
+        
+        for b in pv_buses:
+            print(f"{b['id']:<5} {b['Pg']:<10.4f} {b['V']:<10.4f}")
+            
+        print("-" * 30)
+        
+        while True:
+            try:
+                user_choice = int(input("Enter the Bus ID you want to trip: "))
+                # Validate that the choice exists in our list
+                valid_ids = [b['id'] for b in pv_buses]
+                if user_choice in valid_ids:
+                    target_trip_id = user_choice
+                    print(f"-> Target Confirmed: Bus {target_trip_id} will trip at t={TRIP_TIME}.")
+                    break
+                else:
+                    print(f"Invalid ID. Please choose from: {valid_ids}")
+            except ValueError:
+                print("Invalid input. Please enter a numeric Bus ID.")
+
+    # 2. Build Y-Bus
     Y_bus = ybus_generator.build_y_bus(b_data, l_data)
 
     print("\n--- Starting Simulation (t=1 to 14s) ---")
@@ -30,14 +65,18 @@ def main():
         print(f"\n{'='*20} t = {t} seconds {'='*20}")
         
         # --- EVENT LOGIC ---
-        if t == TRIP_TIME:
-            bus_to_remove = next((b for b in b_data if b['type'] == 2), None)
-            if bus_to_remove:
-                trip_id = bus_to_remove['id']
-                print(f"!!! EVENT: PV BUS {trip_id} TRIPPED !!!")
-                b_data = [b for b in b_data if b['id'] != trip_id]
-                Y_bus = ybus_generator.build_y_bus(b_data, l_data)
-                print("-> Grid Topology Updated.")
+        if t == TRIP_TIME and target_trip_id is not None:
+            print(f"!!! EVENT: TARGETED PV BUS {target_trip_id} TRIPPED !!!")
+            
+            # Remove the specific bus chosen by the user
+            b_data = [b for b in b_data if b['id'] != target_trip_id]
+            
+            # Rebuild Matrix
+            Y_bus = ybus_generator.build_y_bus(b_data, l_data)
+            print("-> Grid Topology Updated.")
+            
+            # Prevent re-tripping logic
+            target_trip_id = None 
 
         # --- 1. RUN LOAD FLOW ---
         V_sol, Th_sol = nr_solver.run_load_flow(Y_bus, b_data, SYSTEM_FREQ, time_step=t)
@@ -49,10 +88,13 @@ def main():
         # Calculate Slack Bus Output
         P_slack_elec_demand = 0.0
         # Slack is Index 0 (Bus 1)
-        for k in range(len(b_data)):
-            mag_Y = abs(Y_bus[0, k])
-            ang_Y = np.angle(Y_bus[0, k])
-            P_slack_elec_demand += V_sol[0] * V_sol[k] * mag_Y * np.cos(Th_sol[0] - Th_sol[k] - ang_Y)
+        # Note: If Slack Bus was tripped (unlikely for PV trip logic), this would need safeguards.
+        # Assuming Slack (Bus 1) is never the one chosen to trip here.
+        if len(b_data) > 0:
+            for k in range(len(b_data)):
+                mag_Y = abs(Y_bus[0, k])
+                ang_Y = np.angle(Y_bus[0, k])
+                P_slack_elec_demand += V_sol[0] * V_sol[k] * mag_Y * np.cos(Th_sol[0] - Th_sol[k] - ang_Y)
 
         # --- 2. INSTANT RAMP UP ---
         current_p_mech = P_slack_elec_demand
