@@ -20,8 +20,7 @@ def get_user_input():
                 if type_code in [1, 2, 3]: break
             except ValueError: pass
         
-        # --- NEW: Ask for Limits for Generators ---
-        p_max_limit = 999.99 # Default high value for PQ
+        p_max_limit = 999.99
         if type_code == 1 or type_code == 2:
             p_max_limit = float(input(f"  GENERATOR LIMIT: Max Power P_max (pu): "))
 
@@ -40,7 +39,7 @@ def get_user_input():
             'Pg': Pg, 'Pl': Pl, 'Qg': Qg, 'Ql': Ql,
             'P_spec': Pg - Pl,
             'Q_spec': Qg - Ql,
-            'P_max': p_max_limit  # Store the limit
+            'P_max': p_max_limit
         })
 
     line_data = []
@@ -50,12 +49,20 @@ def get_user_input():
         if conn.lower() == 'done': break
         try:
             parts = conn.split('-')
+            
+            # --- NEW: Ask for Length ---
+            r_val = float(input("  R (pu): "))
+            x_val = float(input("  X (pu): "))
+            b_val = float(input("  Half-line B (pu): ") or 0.0)
+            len_val = float(input("  Length (km): ")) 
+            
             line_data.append({
                 'from': int(parts[0]),
                 'to': int(parts[1]),
-                'r': float(input("  R (pu): ")),
-                'x': float(input("  X (pu): ")),
-                'b': float(input("  Half-line B (pu): ") or 0.0)
+                'r': r_val,
+                'x': x_val,
+                'b': b_val,
+                'length': len_val  # Store the length
             })
         except ValueError:
             print("Invalid input.")
