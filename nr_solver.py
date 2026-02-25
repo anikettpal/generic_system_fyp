@@ -1,6 +1,7 @@
 import numpy as np
 
-def run_load_flow(Y_bus, bus_data, system_freq, max_iter=20, tol=1e-5, time_step=0):
+# CHANGED: Increased max_iter to 50 for large systems
+def run_load_flow(Y_bus, bus_data, system_freq, max_iter=50, tol=1e-5, time_step=0):
     
     num_buses = len(bus_data)
     V = np.array([b['V'] for b in bus_data])
@@ -17,6 +18,8 @@ def run_load_flow(Y_bus, bus_data, system_freq, max_iter=20, tol=1e-5, time_step
     
     P_calc = np.zeros(num_buses)
     Q_calc = np.zeros(num_buses)
+
+    converged = False # NEW: Track if we actually solved it
 
     for it in range(max_iter):
         P_calc.fill(0.0)
@@ -37,6 +40,7 @@ def run_load_flow(Y_bus, bus_data, system_freq, max_iter=20, tol=1e-5, time_step
         for i in idx_pq: mismatch = max(mismatch, abs(dQa[i]))
             
         if mismatch < tol:
+            converged = True # We found the answer!
             break 
 
         # Jacobian Construction
@@ -76,6 +80,7 @@ def run_load_flow(Y_bus, bus_data, system_freq, max_iter=20, tol=1e-5, time_step
         try:
             correction = np.linalg.solve(J_final, M_final)
         except np.linalg.LinAlgError:
+            # Jacobian is singular (Voltage Collapse)
             return None, None, None, None
 
         n_ang = len(non_slack)
@@ -83,5 +88,10 @@ def run_load_flow(Y_bus, bus_data, system_freq, max_iter=20, tol=1e-5, time_step
         dV = correction[n_ang:]
         for idx, val in enumerate(non_slack): Theta[val] += dTheta[idx]
         for idx, val in enumerate(idx_pq): V[val] += dV[idx]
+
+    # NEW: Safety check after the loop finishes
+    if not converged:
+        print(f"   [WARNING] NR Solver failed to converge after {max_iter} iterations (Mismatch: {mismatch:.5f})")
+        return None, None, None, None
 
     return V, Theta, P_calc, Q_calc
