@@ -55,10 +55,14 @@ def get_user_input():
                 'to': int(parts[1]),
                 'r': float(input("  R (pu): ")),
                 'x': float(input("  X (pu): ")),
-                'b': float(input("  Half-line B (pu): ") or 0.0)
+                'b': float(input("  Half-line B (pu): ") or 0.0),
+                'N': int(input("  Turns Ratio N (1 if no transformer): ")),
+                'rt': float(input("  R of transformer (if present)(pu): ")),
+                'xt': float(input("  X of transformer (if present)(pu): ")),   
             })
         except ValueError:
             print("Invalid input.")
+  
 
     return bus_data, line_data
 
@@ -71,15 +75,24 @@ def build_y_bus(bus_data, line_data):
     for line in line_data:
         if line['from'] in id_map and line['to'] in id_map:
             i = id_map[line['from']]
-            j = id_map[line['to']]
-            
+            j = id_map[line['to']]            
             z = complex(line['r'], line['x'])
+            a = line['N']
             y_s = 1/z
+           
             y_sh = complex(0, line['b'])
             
             Y[i, j] -= y_s
-            Y[j, i] -= y_s
-            Y[i, i] += (y_s + y_sh)
+            Y[j, i] -= y_s/a
+            Y[i, i] += (y_s/a**2 + y_sh)
             Y[j, j] += (y_s + y_sh)
+            
+            if a != 1:
+             zt = complex(line['rt'], line['xt'])
+             y_t = 1/zt
+             Y[i, j] -= y_t/a
+             Y[j, i] -= y_t/a
+             Y[i, i] += y_t/a**2
+             Y[j, j] += y_t
             
     return Y

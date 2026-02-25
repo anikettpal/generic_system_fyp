@@ -4,6 +4,7 @@ import numpy as np
 import ybus_generator
 import nr_solver
 import automatic_generation_control
+import line_parameters  # <--- NEW IMPORT
 
 # --- COLOR CODES ---
 RED = "\033[91m"
@@ -70,7 +71,7 @@ def main():
 
     # --- SIMULATION LOOP (60 Seconds) ---
     for t in range(1, 61):
-        print(f"\n{'='*20} t = {t} seconds {'='*20}")
+        print(f"\n{'='*25} t = {t} seconds {'='*25}")
         
         # --- EVENT LOGIC ---
         if t == TRIP_TIME and target_trip_id is not None:
@@ -84,10 +85,14 @@ def main():
         V_sol, Th_sol, P_calc, Q_calc = nr_solver.run_load_flow(Y_bus, b_data, SYSTEM_FREQ, time_step=t)
         
         if V_sol is None:
-            print("Simulation Crash (Voltage Collapse).")
+            print(f"{RED}Simulation Crash (Voltage Collapse).{RESET}")
             break
 
-        # --- 2. DISPLAY TABLE ---
+        # Map IDs to matrix indices for the line_parameters module
+        bus_id_map = {b['id']: i for i, b in enumerate(b_data)}
+
+        # --- 2. DISPLAY ELECTRICAL TABLE ---
+        print(f"\n[ ELECTRICAL STATE ]")
         print(f"{'ID':<4} {'V (pu)':<10} {'Ang (deg)':<10} {'P (pu)':<10} {'Q (pu)':<10}")
         
         slack_p_demand = 0.0
@@ -112,7 +117,36 @@ def main():
             display_p = p_str if RED not in p_str else p_str
             print(f"{b['id']:<4} {V_sol[i]:<10.4f} {deg:<10.4f} {display_p:<18} {Q_calc[i]:<10.4f}")
 
-        # --- 3. DYNAMICS & CONTROL ---
+
+        # --- 3. DISPLAY PHYSICAL TABLE (LINES) ---
+        print(f"\n[ PHYSICAL STATE - LINES ]")
+        print(f"{'Line':<8} {'Cond':<10} {'Current(A)':<12} {'Temp(C)':<10} {'Sag(m)':<8}")
+        
+        for line in l_data:
+            # Skip if the line connects to a tripped/removed bus
+            if line['from'] not in bus_id_map or line['to'] not in bus_id_map:
+                continue 
+            
+            # Safety checks: ensure keys exist for the partner's module
+            if 'voltage_kV' not in line: 
+                line['voltage_kV'] = 230.0
+            if 'length_km' not in line: 
+                line['length_km'] = line.get('length', 50.0) # Map 'length' to 'length_km'
+                
+            # Use module to calculate current state
+            c_name, I_a, T_c, S_g, T_max = line_parameters.calculate_dynamic_line_state(
+                line, V_sol, Th_sol, Y_bus, bus_id_map
+            )
+            
+            # Highlight temperature if it exceeds Tmax
+            limit_color = RED if T_c > T_max else RESET
+            line_name = f"{line['from']}-{line['to']}"
+            
+            print(f"{line_name:<8} {c_name:<10} {I_a:<12.2f} {limit_color}{T_c:<10.2f}{RESET} {S_g:<8.2f}")
+
+
+        # --- 4. DYNAMICS & CONTROL ---
+        print(f"\n[ GRID CONTROL ]")
         
         # Calculate Control Signal
         raw_agc = agc_sys.calculate_regulation(SYSTEM_FREQ, TIME_STEP)
@@ -139,10 +173,11 @@ def main():
         rocof = 0.0
         if abs(net_imbalance) > 0.000001:
             total_load_est = sum([b['Pl'] for b in b_data])
-            numerator = net_imbalance * 50.0
-            denominator = total_load_est * 2 * H_CONST
-            rocof = numerator / denominator
-            SYSTEM_FREQ += rocof * TIME_STEP
+            if total_load_est > 0:
+                numerator = net_imbalance * 50.0
+                denominator = total_load_est * 2 * H_CONST
+                rocof = numerator / denominator
+                SYSTEM_FREQ += rocof * TIME_STEP
         
         # Display Stats
         print(f"   Turbine Output: {current_turbine_power:.4f} pu (Target: {target_mech_power:.4f})")
