@@ -5,11 +5,11 @@ import ybus_generator
 import nr_solver
 import automatic_generation_control
 import line_parameters
-import ufls_controller  # <--- NEW IMPORT
+import ufls_controller  # <--- UFLS Module
 
 # --- COLOR CODES ---
 RED = "\033[91m"
-YELLOW = "\033[93m"  # For UFLS Alerts
+YELLOW = "\033[93m"
 RESET = "\033[0m"
 
 # --- SIMULATION PARAMETERS ---
@@ -31,7 +31,7 @@ def main():
 
     # --- CONTROL & SAFETY TUNING ---
     agc_sys = automatic_generation_control.AGC(K_p=2.0, K_i=0.02) 
-    ufls_sys = ufls_controller.UFLS() # <--- Initialize UFLS Relay
+    ufls_sys = ufls_controller.UFLS() # Initialize UFLS Relay & CSV logger
 
     # --- PV BUS SELECTION ---
     pv_buses = [b for b in b_data if b['type'] == 2]
@@ -67,9 +67,10 @@ def main():
     print("Initializing Steady State...")
     V_sol, Th_sol, P_cal, Q_cal = nr_solver.run_load_flow(Y_bus, b_data, SYSTEM_FREQ, time_step=0)
 
-    # Initialize Turbine
+    # Initialize Turbine and Dynamics
     slack_idx = next(i for i, b in enumerate(b_data) if b['type'] == 1)
     current_turbine_power = P_cal[slack_idx] 
+    rocof = 0.0  # Initialized here so the UFLS can log it at t=1
 
     # --- SIMULATION LOOP (60 Seconds) ---
     for t in range(1, 61):
@@ -83,9 +84,9 @@ def main():
             print("-> Grid Topology Updated.")
             target_trip_id = None
 
-        # --- UFLS LOGIC (NEW) ---
-        # Check frequency and shed load BEFORE running the load flow
-        shed_occurred, ufls_alerts = ufls_sys.check_and_shed(SYSTEM_FREQ, b_data)
+        # --- UFLS LOGIC ---
+        # Checks frequency, sheds load if needed, and logs state to CSV
+        shed_occurred, ufls_alerts = ufls_sys.check_and_shed(t, SYSTEM_FREQ, rocof, b_data)
         if shed_occurred:
             for alert in ufls_alerts:
                 print(f"{YELLOW}{alert}{RESET}")
@@ -168,7 +169,7 @@ def main():
         
         rocof = 0.0
         if abs(net_imbalance) > 0.000001:
-            total_load_est = sum([b['Pl'] for b in b_data]) # <--- This automatically uses the NEW lower load!
+            total_load_est = sum([b['Pl'] for b in b_data]) # <--- Automatically uses reduced load if UFLS fired
             if total_load_est > 0:
                 numerator = net_imbalance * 50.0
                 denominator = total_load_est * 2 * H_CONST
