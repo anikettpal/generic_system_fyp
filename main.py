@@ -4,10 +4,12 @@ import numpy as np
 import ybus_generator
 import nr_solver
 import automatic_generation_control
-import line_parameters  # <--- NEW IMPORT
+import line_parameters
+import ufls_controller  # <--- NEW IMPORT
 
 # --- COLOR CODES ---
 RED = "\033[91m"
+YELLOW = "\033[93m"  # For UFLS Alerts
 RESET = "\033[0m"
 
 # --- SIMULATION PARAMETERS ---
@@ -27,9 +29,9 @@ def main():
     b_data, l_data = ybus_generator.get_user_input()
     if not b_data: sys.exit()
 
-    # --- CONTROL TUNING ---
-    # Kp=2.0 (Primary), Ki=0.02 (Secondary)
+    # --- CONTROL & SAFETY TUNING ---
     agc_sys = automatic_generation_control.AGC(K_p=2.0, K_i=0.02) 
+    ufls_sys = ufls_controller.UFLS() # <--- Initialize UFLS Relay
 
     # --- PV BUS SELECTION ---
     pv_buses = [b for b in b_data if b['type'] == 2]
@@ -75,11 +77,19 @@ def main():
         
         # --- EVENT LOGIC ---
         if t == TRIP_TIME and target_trip_id is not None:
-            print(f"!!! EVENT: BUS {target_trip_id} TRIPPED !!!")
+            print(f"{RED}!!! EVENT: BUS {target_trip_id} TRIPPED !!!{RESET}")
             b_data = [b for b in b_data if b['id'] != target_trip_id]
             Y_bus = ybus_generator.build_y_bus(b_data, l_data)
             print("-> Grid Topology Updated.")
             target_trip_id = None
+
+        # --- UFLS LOGIC (NEW) ---
+        # Check frequency and shed load BEFORE running the load flow
+        shed_occurred, ufls_alerts = ufls_sys.check_and_shed(SYSTEM_FREQ, b_data)
+        if shed_occurred:
+            for alert in ufls_alerts:
+                print(f"{YELLOW}{alert}{RESET}")
+            print(f"{YELLOW}   -> Load reduced. NR Solver target updated.{RESET}")
 
         # --- 1. RUN LOAD FLOW ---
         V_sol, Th_sol, P_calc, Q_calc = nr_solver.run_load_flow(Y_bus, b_data, SYSTEM_FREQ, time_step=t)
@@ -103,12 +113,10 @@ def main():
             p_val = P_calc[i]
             p_str = f"{p_val:.4f}"
             
-            # Identify Slack Bus Data
             if b['type'] == 1:
                 slack_p_demand = p_val
                 slack_p_limit = b.get('P_max', 999.0)
             
-            # Red Text Limit Check
             if b['type'] in [1, 2]:
                 p_max = b.get('P_max', 999.0)
                 if p_val > p_max + 0.0001:
@@ -123,35 +131,26 @@ def main():
         print(f"{'Line':<8} {'Cond':<10} {'Current(A)':<12} {'Temp(C)':<10} {'Sag(m)':<8}")
         
         for line in l_data:
-            # Skip if the line connects to a tripped/removed bus
             if line['from'] not in bus_id_map or line['to'] not in bus_id_map:
                 continue 
             
-            # Safety checks: ensure keys exist for the partner's module
-            if 'voltage_kV' not in line: 
-                line['voltage_kV'] = 230.0
-            if 'length_km' not in line: 
-                line['length_km'] = line.get('length', 50.0) # Map 'length' to 'length_km'
+            if 'voltage_kV' not in line: line['voltage_kV'] = 230.0
+            if 'length_km' not in line: line['length_km'] = line.get('length', 50.0)
                 
-            # Use module to calculate current state
             c_name, I_a, T_c, S_g, T_max = line_parameters.calculate_dynamic_line_state(
                 line, V_sol, Th_sol, Y_bus, bus_id_map
             )
             
-            # Highlight temperature if it exceeds Tmax
             limit_color = RED if T_c > T_max else RESET
             line_name = f"{line['from']}-{line['to']}"
-            
             print(f"{line_name:<8} {c_name:<10} {I_a:<12.2f} {limit_color}{T_c:<10.2f}{RESET} {S_g:<8.2f}")
 
 
         # --- 4. DYNAMICS & CONTROL ---
         print(f"\n[ GRID CONTROL ]")
         
-        # Calculate Control Signal
         raw_agc = agc_sys.calculate_regulation(SYSTEM_FREQ, TIME_STEP)
         
-        # Limit Authority (+/- 0.5 pu)
         AGC_LIMIT = 0.5
         if raw_agc > AGC_LIMIT: p_agc = AGC_LIMIT
         elif raw_agc < -AGC_LIMIT: p_agc = -AGC_LIMIT
@@ -159,37 +158,31 @@ def main():
         
         target_mech_power = slack_p_demand + p_agc
         
-        # Enforce Limits
         if target_mech_power > slack_p_limit: target_mech_power = slack_p_limit
 
-        # Turbine Lag
         diff = target_mech_power - current_turbine_power
         current_turbine_power += diff * TURBINE_LAG
         
-        # Physics
         damping_loss = DAMPING * (SYSTEM_FREQ - 50.0)
         net_imbalance = current_turbine_power - slack_p_demand - damping_loss
         
         rocof = 0.0
         if abs(net_imbalance) > 0.000001:
-            total_load_est = sum([b['Pl'] for b in b_data])
+            total_load_est = sum([b['Pl'] for b in b_data]) # <--- This automatically uses the NEW lower load!
             if total_load_est > 0:
                 numerator = net_imbalance * 50.0
                 denominator = total_load_est * 2 * H_CONST
                 rocof = numerator / denominator
                 SYSTEM_FREQ += rocof * TIME_STEP
         
-        # Display Stats
         print(f"   Turbine Output: {current_turbine_power:.4f} pu (Target: {target_mech_power:.4f})")
         print(f"   AGC Output:     {p_agc:.4f} pu")
         print(f"   Frequency:      {SYSTEM_FREQ:.4f} Hz | RoCoF: {rocof:.4f} Hz/s")
 
-        # Update Data
         for i in range(len(b_data)):
             b_data[i]['V'] = V_sol[i]
             b_data[i]['theta'] = Th_sol[i]
 
-        # Use a small sleep so 60s doesn't take forever to print
         time.sleep(0.05) 
 
 if __name__ == "__main__":
