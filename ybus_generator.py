@@ -56,14 +56,25 @@ def get_user_input():
                 'r': float(input("  R (pu): ")),
                 'x': float(input("  X (pu): ")),
                 'b': float(input("  Half-line B (pu): ") or 0.0),
-                'N': int(input("  Turns Ratio N (1 if no transformer): ")),
-                'rt': float(input("  R of transformer (if present)(pu): ")),
-                'xt': float(input("  X of transformer (if present)(pu): ")),   
+                'N': int(0),
             })
         except ValueError:
             print("Invalid input.")
-  
-
+            
+    while True:
+        conn = input("Enter lines with transformers (e.g., 1-2) or 'done': ").strip()
+        if conn.lower() == 'done': break
+        try:
+            parts = conn.split('-')
+            line_data.append({
+                'from': int(parts[0]),
+                'to': int(parts[1]),
+                'N': int(input("  Turns Ratio N : ")),
+                'rt': float(input("  R of transformer (pu): ")),
+                'xt': float(input("  X of transformer (pu): ")),   
+            })
+        except ValueError:
+            print("Invalid input.")         
     return bus_data, line_data
 
 def build_y_bus(bus_data, line_data):
@@ -83,11 +94,11 @@ def build_y_bus(bus_data, line_data):
             y_sh = complex(0, line['b'])
             
             Y[i, j] -= y_s
-            Y[j, i] -= y_s/a
-            Y[i, i] += (y_s/a**2 + y_sh)
+            Y[j, i] -= y_s
+            Y[i, i] += (y_s + y_sh)
             Y[j, j] += (y_s + y_sh)
             
-            if a != 1:
+            if a != 0:
              zt = complex(line['rt'], line['xt'])
              y_t = 1/zt
              Y[i, j] -= y_t/a
