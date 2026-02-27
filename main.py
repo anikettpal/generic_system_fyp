@@ -5,11 +5,13 @@ import ybus_generator
 import nr_solver
 import automatic_generation_control
 import line_parameters
-import ufls_controller  # <--- UFLS Module
+import ufls_controller
+import load_fluctuator  # <--- NEW IMPORT
 
 # --- COLOR CODES ---
 RED = "\033[91m"
 YELLOW = "\033[93m"
+CYAN = "\033[96m"  # For Load Fluctuation Alerts
 RESET = "\033[0m"
 
 # --- SIMULATION PARAMETERS ---
@@ -31,7 +33,8 @@ def main():
 
     # --- CONTROL & SAFETY TUNING ---
     agc_sys = automatic_generation_control.AGC(K_p=2.0, K_i=0.02) 
-    ufls_sys = ufls_controller.UFLS() # Initialize UFLS Relay & CSV logger
+    ufls_sys = ufls_controller.UFLS() 
+    fluctuator = load_fluctuator.LoadFluctuator(interval=5) # <--- Initialize Fluctuator
 
     # --- PV BUS SELECTION ---
     pv_buses = [b for b in b_data if b['type'] == 2]
@@ -70,7 +73,7 @@ def main():
     # Initialize Turbine and Dynamics
     slack_idx = next(i for i, b in enumerate(b_data) if b['type'] == 1)
     current_turbine_power = P_cal[slack_idx] 
-    rocof = 0.0  # Initialized here so the UFLS can log it at t=1
+    rocof = 0.0  
 
     # --- SIMULATION LOOP (60 Seconds) ---
     for t in range(1, 61):
@@ -84,8 +87,13 @@ def main():
             print("-> Grid Topology Updated.")
             target_trip_id = None
 
+        # --- DYNAMIC LOAD FLUCTUATION (NEW) ---
+        # Randomly increase load every 5 seconds
+        fluctuated, fluc_alert = fluctuator.fluctuate_load(t, b_data)
+        if fluctuated:
+            print(f"{CYAN}{fluc_alert}{RESET}")
+
         # --- UFLS LOGIC ---
-        # Checks frequency, sheds load if needed, and logs state to CSV
         shed_occurred, ufls_alerts = ufls_sys.check_and_shed(t, SYSTEM_FREQ, rocof, b_data)
         if shed_occurred:
             for alert in ufls_alerts:
@@ -99,7 +107,7 @@ def main():
             print(f"{RED}Simulation Crash (Voltage Collapse).{RESET}")
             break
 
-        # Map IDs to matrix indices for the line_parameters module
+        # Map IDs to matrix indices
         bus_id_map = {b['id']: i for i, b in enumerate(b_data)}
 
         # --- 2. DISPLAY ELECTRICAL TABLE ---
@@ -126,7 +134,6 @@ def main():
             display_p = p_str if RED not in p_str else p_str
             print(f"{b['id']:<4} {V_sol[i]:<10.4f} {deg:<10.4f} {display_p:<18} {Q_calc[i]:<10.4f}")
 
-
         # --- 3. DISPLAY PHYSICAL TABLE (LINES) ---
         print(f"\n[ PHYSICAL STATE - LINES ]")
         print(f"{'Line':<8} {'Cond':<10} {'Current(A)':<12} {'Temp(C)':<10} {'Sag(m)':<8}")
@@ -145,7 +152,6 @@ def main():
             limit_color = RED if T_c > T_max else RESET
             line_name = f"{line['from']}-{line['to']}"
             print(f"{line_name:<8} {c_name:<10} {I_a:<12.2f} {limit_color}{T_c:<10.2f}{RESET} {S_g:<8.2f}")
-
 
         # --- 4. DYNAMICS & CONTROL ---
         print(f"\n[ GRID CONTROL ]")
@@ -169,7 +175,7 @@ def main():
         
         rocof = 0.0
         if abs(net_imbalance) > 0.000001:
-            total_load_est = sum([b['Pl'] for b in b_data]) # <--- Automatically uses reduced load if UFLS fired
+            total_load_est = sum([b['Pl'] for b in b_data]) 
             if total_load_est > 0:
                 numerator = net_imbalance * 50.0
                 denominator = total_load_est * 2 * H_CONST
