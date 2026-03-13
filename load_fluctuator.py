@@ -1,7 +1,7 @@
 import random
 
 class LoadFluctuator:
-    def __init__(self, interval=5, min_inc=0.01, max_inc=0.05):
+    def __init__(self, interval=5, min_inc=0.01, max_inc=0.02):
         self.interval = interval
         self.min_inc = min_inc
         self.max_inc = max_inc
