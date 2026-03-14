@@ -1,6 +1,6 @@
 # 
-Aniket: AGC, integrating sag and line parameters in this code
+Aniket: OPF feasibility
 Aayush: verifying NR file
-Urshita: Make sag code dyanmic,Fault simulation calculation
-Parthvi: Contigency analysis
+Urshita:Fault simulation calculation
+Parthvi:
 Anshul: Master integration and frequency chart plotting
