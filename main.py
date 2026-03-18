@@ -67,57 +67,95 @@ def main():
                     break
             except ValueError: pass
 
+    # --- TRANSMISSION LINE FAULT SELECTION ---
+    target_fault_line_idx = None
+    
+    if l_data:
+        print("\n" + "="*40)
+        print("   SELECT TRANSMISSION LINE TO FAULT")
+        print("         (Symmetrical Fault)")
+        print("="*40)
+        print(f"{'Idx':<5} {'From':<10} {'To':<10}")
+        print("-" * 30)
+        for idx, line in enumerate(l_data):
+            print(f"{idx+1:<5} Bus {line['from']:<6} Bus {line['to']:<6}")
+        print("-" * 30)
+        print("Enter '0' to SKIP line fault.")
+        
+        while True:
+            try:
+                user_input = input("Enter Line Idx to fault (or 0): ").strip()
+                user_choice = int(user_input)
+                if user_choice == 0:
+                    target_fault_line_idx = None
+                    break
+                elif 1 <= user_choice <= len(l_data):
+                    target_fault_line_idx = user_choice - 1
+                    break
+            except ValueError: pass
+
+    # --- SIMULATION MODE LOGIC ---
+    is_gen_trip_active = (target_trip_id is not None)
+    is_fault_active = (target_fault_line_idx is not None)
+    # Exclusively lock frequency when there is ONLY a symmetrical fault
+    lock_freq_for_fault = is_fault_active and not is_gen_trip_active
+
     Y_bus = ybus_generator.build_y_bus(b_data, l_data)
 
     print("\n--- Starting Simulation (t=1 to 60s) ---")
     print("Initializing Steady State...")
     V_sol, Th_sol, P_cal, Q_cal = nr_solver.run_load_flow(Y_bus, b_data, SYSTEM_FREQ, time_step=0)
 
-    # --- CONTINGENCY ANALYSIS (t=0) ---
-    print(f"\n{MAGENTA}--- INITIAL CONTINGENCY ANALYSIS (N-1) ---{RESET}")
-    level, alarms = contingency_analysis.evaluate_security(b_data, l_data, SYSTEM_FREQ, original_total_load)
-    print(f"{MAGENTA}Status: {level}{RESET}")
-    if alarms:
-        for a in alarms[:3]: print(f"{MAGENTA}  -> {a}{RESET}")
-        if len(alarms) > 3: print(f"{MAGENTA}  -> ... and {len(alarms)-3} more vulnerabilities.{RESET}")
-
     slack_idx = next(i for i, b in enumerate(b_data) if b['type'] == 1)
     current_turbine_power = P_cal[slack_idx] 
-    rocof = 0.0  
 
-    # --- SIMULATION LOOP (60 Seconds) ---
     for t in range(1, 61):
-        print(f"\n{'='*25} t = {t} seconds {'='*25}")
+        print(f"\n{'='*20} t = {t} seconds {'='*20}")
+        
+        topology_changed = False
         
         if t == TRIP_TIME and target_trip_id is not None:
-            print(f"{RED}!!! EVENT: BUS {target_trip_id} TRIPPED !!!{RESET}")
-            b_data = [b for b in b_data if b['id'] != target_trip_id]
-            Y_bus = ybus_generator.build_y_bus(b_data, l_data)
+            print(f"!!! EVENT: GENERATOR AT BUS {target_trip_id} TRIPPED !!!")
+            for b in b_data:
+                if b['id'] == target_trip_id:
+                    b['Pg'] = 0.0
+                    b['P_spec'] = b['Pg'] - b['Pl']
+                    if b['type'] == 2:
+                        b['type'] = 3  
             target_trip_id = None
 
-        fluctuated, fluc_alert = fluctuator.fluctuate_load(t, b_data)
+        if t == TRIP_TIME and target_fault_line_idx is not None:
+            faulted_line = l_data[target_fault_line_idx]
+            print(f"!!! EVENT: SYMMETRICAL FAULT ON LINE {faulted_line['from']}-{faulted_line['to']} !!!")
+            
+            bus_id_map = {b['id']: i for i, b in enumerate(b_data)}
+            I_sc_pu, I_sc_amps = line_parameters.calculate_short_circuit_current(
+                faulted_line, V_sol, Th_sol, Y_bus, bus_id_map
+            )
+            
+            if I_sc_amps is not None:
+                print(f"-> 3-Phase Short Circuit Current at Bus {faulted_line['from']}: {RED}{I_sc_amps:.2f} A{RESET} ({I_sc_pu:.2f} pu)")
+            else:
+                print("-> Short Circuit Current could not be computed (singular matrix).")
+                
+            print("-> Fault cleared by tripping the line.")
+            l_data.pop(target_fault_line_idx)
+            topology_changed = True
+            target_fault_line_idx = None
+
+        if topology_changed:
+            Y_bus = ybus_generator.build_y_bus(b_data, l_data)
+            print("-> Grid Topology Updated.")
+
+        # Fluctuate load (Simulates random demand variations)
+        fluctuated, alert = fluctuator.fluctuate_load(t, b_data)
         if fluctuated:
-            print(f"{CYAN}{fluc_alert}{RESET}")
-
-        shed_occurred, ufls_alerts = ufls_sys.check_and_shed(t, SYSTEM_FREQ, rocof, b_data)
-        if shed_occurred:
-            for alert in ufls_alerts:
-                print(f"{YELLOW}{alert}{RESET}")
-            print(f"{YELLOW}   -> Load reduced. NR Solver target updated.{RESET}")
-
-        # --- PERIODIC CONTINGENCY ANALYSIS ---
-        if t % 10 == 0:
-            print(f"\n{MAGENTA}[ CONTINGENCY SWEEP ]{RESET}")
-            level, alarms = contingency_analysis.evaluate_security(b_data, l_data, SYSTEM_FREQ, original_total_load)
-            print(f"{MAGENTA}Security Status: {level}{RESET}")
-            if alarms:
-                for a in alarms[:3]: print(f"{MAGENTA}  -> {a}{RESET}")
-                if len(alarms) > 3: print(f"{MAGENTA}  -> ... and {len(alarms)-3} more.{RESET}")
+            print(f"{CYAN}{alert}{RESET}")
 
         V_sol, Th_sol, P_calc, Q_calc = nr_solver.run_load_flow(Y_bus, b_data, SYSTEM_FREQ, time_step=t)
         
         if V_sol is None:
-            print(f"{RED}Simulation Crash (Voltage Collapse).{RESET}")
+            print("Simulation Crash (Voltage Collapse).")
             break
 
         bus_id_map = {b['id']: i for i, b in enumerate(b_data)}
@@ -151,18 +189,24 @@ def main():
         for line in l_data:
             if line['from'] not in bus_id_map or line['to'] not in bus_id_map:
                 continue 
-            
-            if 'voltage_kV' not in line: line['voltage_kV'] = 230.0
-            if 'length_km' not in line: line['length_km'] = line.get('length', 50.0)
                 
             c_name, I_a, T_c, S_g, T_max = line_parameters.calculate_dynamic_line_state(
                 line, V_sol, Th_sol, Y_bus, bus_id_map
             )
-            
             limit_color = RED if T_c > T_max else RESET
-            line_name = f"{line['from']}-{line['to']}"
-            print(f"{line_name:<8} {c_name:<10} {I_a:<12.2f} {limit_color}{T_c:<10.2f}{RESET} {S_g:<8.2f}")
+            print(f"{line['from']}-{line['to']:<6} {c_name:<10} {I_a:<12.2f} {limit_color}{T_c:<10.2f}{RESET} {S_g:<8.2f}")
 
+
+# --- PERIODIC CONTINGENCY ANALYSIS ---
+        if t % 10 == 0:
+            print(f"\n{MAGENTA}[ CONTINGENCY SWEEP ]{RESET}")
+            level, alarms = contingency_analysis.evaluate_security(b_data, l_data, SYSTEM_FREQ, original_total_load)
+            
+            print(f"{MAGENTA}Security Status: {level}{RESET}") # <--- ADD THIS LINE BACK
+            
+            if alarms:
+                for alarm in alarms:
+                    print(f"   {MAGENTA}-> {alarm}{RESET}")
         print(f"\n[ GRID CONTROL ]")
         
         raw_agc = agc_sys.calculate_regulation(SYSTEM_FREQ, TIME_STEP)
@@ -181,19 +225,27 @@ def main():
         
         damping_loss = DAMPING * (SYSTEM_FREQ - 50.0)
         net_imbalance = current_turbine_power - slack_p_demand - damping_loss
+
+        if lock_freq_for_fault:
+            net_imbalance = 0.0
+            current_turbine_power = slack_p_demand 
         
         rocof = 0.0
         if abs(net_imbalance) > 0.000001:
-            total_load_est = sum([b['Pl'] for b in b_data]) 
-            if total_load_est > 0:
-                numerator = net_imbalance * 50.0
-                denominator = total_load_est * 2 * H_CONST
-                rocof = numerator / denominator
-                SYSTEM_FREQ += rocof * TIME_STEP
+            # Using Per-Unit Swing Equation
+            rocof = (net_imbalance * 50.0) / (2 * H_CONST)
+            SYSTEM_FREQ += rocof * TIME_STEP
+
+        # Apply Under Frequency Load Shedding
+        shed_occurred, ufls_alerts = ufls_sys.check_and_shed(t, SYSTEM_FREQ, rocof, b_data)
+        if shed_occurred:
+            for alert in ufls_alerts:
+                print(f"{YELLOW}{alert}{RESET}")
+            print(f"{YELLOW} -> Load reduced. NR Solver target updated.{RESET}")
         
-        print(f"   Turbine Output: {current_turbine_power:.4f} pu (Target: {target_mech_power:.4f})")
-        print(f"   AGC Output:     {p_agc:.4f} pu")
-        print(f"   Frequency:      {SYSTEM_FREQ:.4f} Hz | RoCoF: {rocof:.4f} Hz/s")
+        print(f"Turbine Output: {current_turbine_power:.4f} pu (Target: {target_mech_power:.4f})")
+        print(f"AGC Output:     {p_agc:.4f} pu")
+        print(f"Frequency:      {SYSTEM_FREQ:.4f} Hz | RoCoF: {rocof:.4f} Hz/s")
 
         for i in range(len(b_data)):
             b_data[i]['V'] = V_sol[i]
