@@ -87,8 +87,16 @@ def evaluate_security(b_data, l_data, system_freq, original_load):
                 cv = check_limits(b_cont, l_cont, Vc, Thc, Y_cont)
                 if cv: contingency_alarms.append(f"Gen {b['id']} Outage -> Limits Violated")
 
-    # Categorize
+   # Categorize
     if len(contingency_alarms) > 0:
-        return "Level 2/3 (Alert / Correctively Secure)", contingency_alarms
+        # CAPACITY CHECK: Do the surviving generators have enough P_max to cover the load?
+        total_p_max = sum([b.get('P_max', 0) for b in b_data if b['type'] in [1, 2]])
+        
+        if total_p_max > current_load:
+            # We have the physical capacity to fix the violations
+            return "Level 2 (Correctively Secure)", contingency_alarms
+        else:
+            # We do not have the capacity. UFLS will be forced to act.
+            return "Level 3 (Alert - Insufficient Capacity)", contingency_alarms
     else:
         return "Level 1 (Secure)", []
