@@ -87,23 +87,28 @@ def build_y_bus(bus_data, line_data):
         if line['from'] in id_map and line['to'] in id_map:
             i = id_map[line['from']]
             j = id_map[line['to']]            
-            z = complex(line['r'], line['x'])
-            a = line['N']
-            y_s = 1/z
-           
-            y_sh = complex(0, line['b'])
             
-            Y[i, j] -= y_s
-            Y[j, i] -= y_s
-            Y[i, i] += (y_s + y_sh)
-            Y[j, j] += (y_s + y_sh)
+            # 1. Check if it is a Normal Transmission Line
+            if 'r' in line and 'x' in line:
+                z = complex(line['r'], line['x'])
+                y_s = 1/z
+                y_sh = complex(0, line.get('b', 0.0))
+                
+                Y[i, j] -= y_s
+                Y[j, i] -= y_s
+                Y[i, i] += (y_s + y_sh)
+                Y[j, j] += (y_s + y_sh)
             
-            if a != 0:
-             zt = complex(line['rt'], line['xt'])
-             y_t = 1/zt
-             Y[i, j] -= y_t/a
-             Y[j, i] -= y_t/a
-             Y[i, i] += y_t/a**2
-             Y[j, j] += y_t
+            # 2. Check if it is a Transformer
+            if 'rt' in line and 'xt' in line:
+                a = line.get('N', 1.0)
+                zt = complex(line['rt'], line['xt'])
+                y_t = 1/zt
+                
+                if a != 0:
+                    Y[i, j] -= y_t/a
+                    Y[j, i] -= y_t/a
+                    Y[i, i] += y_t/(a**2)
+                    Y[j, j] += y_t
             
     return Y
