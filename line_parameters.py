@@ -26,9 +26,9 @@ def select_conductor(V):
     else:
         return "Dog"
 
-def conductor_temp(I, Rline):
+def conductor_temp(I, R_per_km):
     h_wind = 1 + 0.6*wind_speed
-    return Tamb + (I**2 * Rline * 1e-3)/h_wind
+    return Tamb + (I**2 * R_per_km * 1e-3)/h_wind
 
 def max_power(V, Imax):
     return np.sqrt(3)*V*Imax/1000
@@ -67,19 +67,44 @@ def calculate_dynamic_line_state(line, V_sol, Th_sol, Y_bus, bus_id_map, base_mv
     
     # 4. Convert pu current to actual Amperes
     line_kV = line.get('voltage_kV', 230.0) 
-    line_km = line.get('length_km', 50.0)
     I_base = (base_mva * 1000) / (np.sqrt(3) * line_kV)
     I_amps = I_pu * I_base
     
     # 5. Get physical properties and calculate
     c_name = select_conductor(line_kV)
     c = conductors[c_name]
-    R_total = c["R20"] * line_km
+    
+    # FIXED LOGIC: Pass resistance per unit length (Ohms/km) instead of R_total
+    R_per_km = c["R20"] 
     
     # Calculate physical state
-    temp = conductor_temp(I_amps, R_total)
+    temp = conductor_temp(I_amps, R_per_km)
     
     # Pass 'temp' into the sag calculation
     current_sag = sag(c["weight"], c["span"], c["tension"], temp)
     
     return c_name, I_amps, temp, current_sag, c["Tmax"]
+
+# --- NEW: Short Circuit Current Calculation ---
+def calculate_short_circuit_current(faulted_line, V_sol, Th_sol, Y_bus, bus_id_map, base_mva=100.0):
+    """Calculates 3-phase symmetrical short circuit current at the 'from' bus of the faulted line."""
+    try:
+        # 1. Calculate the Thevenin equivalent impedance (Z-bus is inverse of Y-bus)
+        Z_bus = np.linalg.inv(Y_bus)
+        fault_bus_idx = bus_id_map[faulted_line['from']]
+        Z_th = Z_bus[fault_bus_idx, fault_bus_idx]
+        
+        # 2. Extract Pre-fault voltage at the faulted bus
+        V_prefault = V_sol[fault_bus_idx] * np.exp(1j * Th_sol[fault_bus_idx])
+        
+        # 3. Calculate Short Circuit Current in Per-Unit (I = V / Z)
+        I_sc_pu = np.abs(V_prefault / Z_th)
+        
+        # 4. Convert to actual Amperes
+        line_kV = faulted_line.get('voltage_kV', 230.0)
+        I_base = (base_mva * 1000) / (np.sqrt(3) * line_kV)
+        I_sc_amps = I_sc_pu * I_base
+        
+        return I_sc_pu, I_sc_amps
+    except np.linalg.LinAlgError:
+        return None, None
